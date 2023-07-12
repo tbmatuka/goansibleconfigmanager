@@ -1,0 +1,14 @@
+listen:
+    host: 0.0.0.0
+    port: 443
+    ssl_cert: path/to/ssl.crt
+    ssl_key: path/to/ssl.key
+
+generated_config_dir_path: /srv/ansible-config-manager/
+url_prefix: https://ansible.manager/
+
+global_vars:
+    root_password_hash: '$6$coolPasswordHash'
+    ssh_keys:
+        tbmatuka_home: 'ssh-rsa AAAAB3NzaC1yc2... tbmatuka@apollo'
+        tbmatuka_laptop: 'ssh-rsa AAAAB3NzaC1yc2... tbmatuka@demeter'

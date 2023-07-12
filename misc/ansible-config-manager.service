@@ -1,0 +1,8 @@
+[Unit]
+Description=Ansible Config Manager
+
+[Service]
+ExecStart=/usr/local/bin/ansible-config-manager
+
+[Install]
+WantedBy=default.target
