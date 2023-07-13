@@ -16,6 +16,7 @@ type Config struct {
 		Port    uint16
 		SSLCert string
 		SSLKey  string
+		SSL     bool
 	}
 
 	// used for generating URLs
@@ -32,6 +33,9 @@ type Config struct {
 
 	// Global env variables that will be added to each playbook
 	GlobalVars []byte
+
+	// Names of scripts as keys and paths to scripts as calues
+	Scripts map[string]ScriptConfig
 }
 
 type YamlConfig struct {
@@ -40,7 +44,7 @@ type YamlConfig struct {
 		Port    uint16 `yaml:"port"`
 		SSLCert string `yaml:"ssl_cert"`
 		SSLKey  string `yaml:"ssl_key"`
-	}
+	} `yaml:"listen"`
 
 	URLPrefix string `yaml:"url_prefix"`
 
@@ -49,18 +53,39 @@ type YamlConfig struct {
 	GlobalVars map[string]interface{} `yaml:"global_vars"`
 }
 
+type ScriptConfig struct {
+	Name     string
+	Path     string
+	Template bool
+}
+
 type HostConfig struct {
 	Name          string
 	Key           string
 	ServiceNames  []string
 	HasProjects   bool
 	VariablesFile []byte
+	TarFilePath   string
 }
 
 type HostYamlConfig struct {
 	ConfigKey string                 `yaml:"config_key"`
 	Services  map[string]interface{} `yaml:"services"`
 	Projects  map[string]interface{} `yaml:"projects"`
+}
+
+func (config *Config) GetExistingHostsOrFatal(hosts []string) map[string]bool {
+	var hostsMap = make(map[string]bool)
+
+	for _, host := range hosts {
+		if _, exists := config.Hosts[host]; !exists {
+			log.Fatalln(`Host`, host, `does not exist.`)
+		}
+
+		hostsMap[host] = true
+	}
+
+	return hostsMap
 }
 
 func loadConfig(cmd *cobra.Command) Config {
@@ -95,14 +120,6 @@ func loadConfig(cmd *cobra.Command) Config {
 
 	config.RolesPath = fmt.Sprintf(`%s/`, strings.TrimRight(rolesDirPath, `/`))
 
-	hostsDirPath := fmt.Sprintf(`%s%s`, configDir, `hosts/`)
-	hostsDir, err := os.ReadDir(hostsDirPath)
-	if err != nil {
-		log.Fatalln(`hosts directory`, hostsDirPath, `doesn't exist.`)
-	}
-
-	config.Hosts = loadHostFiles(hostsDir, hostsDirPath, roles)
-
 	config.Listen.Host, _ = cmd.Flags().GetString(`host`)
 	if !cmd.Flags().Changed(`host`) && yamlConfig.Listen.Host != `` {
 		config.Listen.Host = yamlConfig.Listen.Host
@@ -123,25 +140,40 @@ func loadConfig(cmd *cobra.Command) Config {
 		config.Listen.SSLKey = yamlConfig.Listen.SSLKey
 	}
 
+	config.CheckSSL()
+	config.DetermineURLPrefix(cmd, yamlConfig)
+
 	config.GeneratedConfigDirPath, _ = cmd.Flags().GetString(`generated-config-dir`)
 	if !cmd.Flags().Changed(`generated-config-dir`) && yamlConfig.GeneratedConfigDirPath != `` {
 		config.GeneratedConfigDirPath = yamlConfig.GeneratedConfigDirPath
 	}
 
-	config.URLPrefix, _ = cmd.Flags().GetString(`url-prefix`)
-	if !cmd.Flags().Changed(`url-prefix`) && yamlConfig.URLPrefix != `` {
-		config.URLPrefix = yamlConfig.URLPrefix
-	}
+	config.LoadHostFiles(fmt.Sprintf(`%s%s`, configDir, `hosts/`), roles)
+	config.LoadScripts(fmt.Sprintf(`%s%s`, configDir, `scripts/`))
 
 	config.GlobalVars, _ = yaml.Marshal(yamlConfig.GlobalVars)
 
 	return config
 }
 
-func loadHostFiles(hostsDir []os.DirEntry, hostsDirPath string, roles map[string]bool) map[string]HostConfig {
-	hosts := make(map[string]HostConfig)
+func (config *Config) LoadHostFiles(hostsDirPath string, roles map[string]bool) {
+	hostsDir, err := os.ReadDir(hostsDirPath)
+	if err != nil {
+		log.Fatalln(`hosts directory`, hostsDirPath, `doesn't exist.`)
+	}
+
+	tarFileDir := strings.TrimRight(config.GeneratedConfigDirPath, `/`)
+
+	config.Hosts = make(map[string]HostConfig)
 
 	for _, file := range hostsDir {
+		fileExtension := filepath.Ext(file.Name())
+		if fileExtension != `.yml` && fileExtension != `.yaml` {
+			continue
+		}
+
+		hostName := strings.TrimSuffix(file.Name(), fileExtension)
+
 		yamlConfig := HostYamlConfig{}
 
 		filePath := fmt.Sprintf(`%s%s`, hostsDirPath, file.Name())
@@ -160,10 +192,11 @@ func loadHostFiles(hostsDir []os.DirEntry, hostsDirPath string, roles map[string
 		}
 
 		hostConfig := HostConfig{
-			Name:          strings.TrimSuffix(file.Name(), filepath.Ext(file.Name())),
+			Name:          hostName,
 			Key:           yamlConfig.ConfigKey,
 			HasProjects:   len(yamlConfig.Projects) > 0,
 			VariablesFile: fileContent,
+			TarFilePath:   fmt.Sprintf(`%s/%s.tar`, tarFileDir, hostName),
 		}
 
 		for key := range yamlConfig.Services {
@@ -174,8 +207,67 @@ func loadHostFiles(hostsDir []os.DirEntry, hostsDirPath string, roles map[string
 			hostConfig.ServiceNames = append(hostConfig.ServiceNames, key)
 		}
 
-		hosts[hostConfig.Name] = hostConfig
+		config.Hosts[hostConfig.Name] = hostConfig
+	}
+}
+
+func (config *Config) LoadScripts(scriptsDirPath string) {
+	config.Scripts = make(map[string]ScriptConfig)
+
+	dir, err := os.ReadDir(scriptsDirPath)
+	if err != nil {
+		return
 	}
 
-	return hosts
+	for _, file := range dir {
+		scriptConfig := ScriptConfig{
+			Name: file.Name(),
+			Path: fmt.Sprintf(`%s%s`, scriptsDirPath, file.Name()),
+		}
+
+		fileExtension := filepath.Ext(file.Name())
+		if fileExtension == `.tpl` {
+			scriptConfig.Name = strings.TrimSuffix(file.Name(), fileExtension)
+			scriptConfig.Template = true
+		}
+
+		config.Scripts[scriptConfig.Name] = scriptConfig
+	}
+}
+
+func (config *Config) CheckSSL() {
+	if config.Listen.SSLCert != `` && config.Listen.SSLKey == `` {
+		log.Fatalln(`SSL certificate is defined, but the SSL key is not.`)
+	}
+
+	if config.Listen.SSLCert == `` && config.Listen.SSLKey != `` {
+		log.Fatalln(`SSL key is defined, but the SSL certificate is not.`)
+	}
+
+	config.Listen.SSL = config.Listen.SSLCert != ``
+}
+
+func (config *Config) DetermineURLPrefix(cmd *cobra.Command, yamlConfig YamlConfig) {
+	urlPrefix, _ := cmd.Flags().GetString(`url-prefix`)
+	if !cmd.Flags().Changed(`url-prefix`) && yamlConfig.URLPrefix != `` {
+		urlPrefix = yamlConfig.URLPrefix
+	}
+
+	urlPrefix = strings.TrimRight(urlPrefix, `/`)
+
+	if urlPrefix == `` {
+		urlSchema := `http`
+		if config.Listen.SSL {
+			urlSchema = `https`
+		}
+
+		urlPort := fmt.Sprintf(`:%d`, config.Listen.Port)
+		if (config.Listen.Port == 80 && !config.Listen.SSL) || (config.Listen.Port == 443 && config.Listen.SSL) {
+			urlPort = ``
+		}
+
+		urlPrefix = fmt.Sprintf(`%s://%s%s`, urlSchema, getListenAddress(*config), urlPort)
+	}
+
+	config.URLPrefix = urlPrefix
 }

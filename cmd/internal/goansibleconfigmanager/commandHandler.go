@@ -20,6 +20,8 @@ func Execute() {
 
 	rootCmd.PersistentFlags().String(`generated-config-dir`, `/var/lib/ansible-config-manager/`, `dir where generated configs are stored`)
 
+	rootCmd.PersistentFlags().String(`url-prefix`, ``, `prefix to use for generating URLs`)
+
 	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)
