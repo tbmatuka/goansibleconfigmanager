@@ -20,7 +20,7 @@ type tarFile struct {
 type PlaybookYaml struct {
 	Hosts      string   `yaml:"hosts"`
 	Connection string   `yaml:"connection"`
-	VarFiles   []string `yaml:"var_files"`
+	VarsFiles  []string `yaml:"vars_files"`
 	Roles      []string `yaml:"roles"`
 }
 
@@ -67,7 +67,7 @@ func runGenerateCmd(cmd *cobra.Command, args []string) {
 			Body: hostConfig.VariablesFile,
 		})
 
-		playbook.VarFiles = append(playbook.VarFiles, `playbook_vars.yml`)
+		playbook.VarsFiles = append(playbook.VarsFiles, `playbook_vars.yml`)
 
 		// store global variables
 		if len(config.GlobalVars) > 0 {
@@ -76,7 +76,7 @@ func runGenerateCmd(cmd *cobra.Command, args []string) {
 				Body: config.GlobalVars,
 			})
 
-			playbook.VarFiles = append(playbook.VarFiles, `global_vars.yml`)
+			playbook.VarsFiles = append(playbook.VarsFiles, `global_vars.yml`)
 		}
 
 		// generate hosts file
